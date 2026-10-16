@@ -30,8 +30,13 @@ func main() {
 		maxCount   = flag.Int("c", 0, "Stop after capturing N matching packets (0 = unlimited)")
 		snapLen    = flag.Int("s", 65535, "SnapLen (maximum bytes per packet)")
 		promisc    = flag.Bool("promisc", false, "Enable promiscuous mode on live interface")
+		noColor    = flag.Bool("no-color", false, "Disable colored terminal output")
 	)
 	flag.Parse()
+
+	if *noColor || os.Getenv("NO_COLOR") != "" {
+		colorEnabled = false
+	}
 
 	if *listIfaces {
 		printInterfaces()
@@ -96,13 +101,22 @@ func main() {
 
 	assembler := stream.NewTCPAssembler(func(ev stream.StreamEvent) {
 		if ch, err := l7.ParseTLSClientHello(ev.StreamBuffer); err == nil {
-			fmt.Printf("    [L7 Stream %s %s->%s] %s\n",
-				ev.Direction, ev.Client, ev.Server, ch.Summary())
+			fmt.Printf("    %s %s %s\n",
+				colorize(badgeTLS, " L7 TLS "),
+				colorize(ansiDim, fmt.Sprintf("[%s %s->%s]", ev.Direction, ev.Client, ev.Server)),
+				colorize(ansiBrightMagenta, ch.Summary()))
 			return
 		}
 		if httpMsg, err := l7.ParseHTTP(ev.StreamBuffer); err == nil {
-			fmt.Printf("    [L7 Stream %s %s->%s] %s\n",
-				ev.Direction, ev.Client, ev.Server, httpMsg.Summary())
+			fmt.Printf("    %s %s %s\n",
+				colorize(badgeHTTP, " L7 HTTP "),
+				colorize(ansiDim, fmt.Sprintf("[%s %s->%s]", ev.Direction, ev.Client, ev.Server)),
+				colorize(ansiBrightGreen, httpMsg.Summary()))
+			if len(httpMsg.Body) > 0 {
+				fmt.Printf("    %s %s\n",
+					colorize(ansiYellow, fmt.Sprintf("[HTTP Body (%d bytes)]", len(httpMsg.Body))),
+					colorize(ansiCyan, httpMsg.BodyString()))
+			}
 		}
 	})
 
@@ -138,7 +152,9 @@ func main() {
 			assembler.ProcessPacket(&decoded)
 		} else if decoded.HasUDP && (decoded.UDP.SrcPort == 53 || decoded.UDP.DstPort == 53 || decoded.UDP.SrcPort == 5353 || decoded.UDP.DstPort == 5353) {
 			if dnsMsg, err := l7.ParseDNS(decoded.Payload); err == nil {
-				fmt.Printf("    [L7 UDP] %s\n", dnsMsg.Summary())
+				fmt.Printf("    %s %s\n",
+					colorize(badgeDNS, " L7 DNS "),
+					colorize(ansiBrightCyan, dnsMsg.Summary()))
 			}
 		}
 
@@ -171,25 +187,133 @@ func printInterfaces() {
 	}
 }
 
+// ANSI color codes inspired by Wireshark protocol coloring rules.
+const (
+	ansiReset         = "\033[0m"
+	ansiDim           = "\033[2m"
+	ansiBold          = "\033[1m"
+	ansiRed           = "\033[91m"
+	ansiGreen         = "\033[32m"
+	ansiBrightGreen   = "\033[92m"
+	ansiYellow        = "\033[93m"
+	ansiBlue          = "\033[94m"
+	ansiMagenta       = "\033[35m"
+	ansiBrightMagenta = "\033[95m"
+	ansiCyan          = "\033[36m"
+	ansiBrightCyan    = "\033[96m"
+	ansiGray          = "\033[90m"
+
+	// Protocol badges (background + foreground)
+	badgeTCP  = "\033[1;44;97m"  // Blue bg, white text
+	badgeRST  = "\033[1;41;97m"  // Red bg, white text (TCP RST)
+	badgeSYN  = "\033[1;42;30m"  // Green bg, black text (TCP SYN/Handshake)
+	badgeHTTP = "\033[1;42;30m"  // Green bg, black text (HTTP)
+	badgeTLS  = "\033[1;45;97m"  // Magenta bg, white text (TLS/HTTPS)
+	badgeUDP  = "\033[1;46;30m"  // Cyan bg, black text (UDP)
+	badgeDNS  = "\033[1;106;30m" // Bright Cyan bg, black text (DNS)
+	badgeICMP = "\033[1;43;30m"  // Yellow bg, black text (ICMP)
+	badgeARP  = "\033[1;100;97m" // Dark gray bg, white text (ARP/L2)
+)
+
+var colorEnabled = true
+
+func colorize(color, text string) string {
+	if !colorEnabled || color == "" {
+		return text
+	}
+	return color + text + ansiReset
+}
+
 func printPacketSummary(idx int, p *layers.DecodedPacket) {
-	ts := p.Timestamp.Format("15:04:05.000000")
+	ts := colorize(ansiDim, p.Timestamp.Format("15:04:05.000000"))
+	num := colorize(ansiGray, fmt.Sprintf("#%-4d", idx))
+
 	switch {
 	case p.HasTCP:
-		fmt.Printf("#%-4d %s TCP  %s:%d -> %s:%d [%s] seq=%d ack=%d len=%d\n",
-			idx, ts, p.SrcIP(), p.TCP.SrcPort, p.DstIP(), p.TCP.DstPort,
-			p.TCP.FlagsString(), p.TCP.Seq, p.TCP.Ack, len(p.Payload))
+		badge := badgeTCP
+		lineColor := ansiBlue
+		protoLabel := " TCP  "
+
+		switch {
+		case p.TCP.HasFlag(layers.TCPFlagRST):
+			badge = badgeRST
+			lineColor = ansiRed
+		case l7.IsLikelyHTTP(p.Payload):
+			badge = badgeHTTP
+			lineColor = ansiBrightGreen
+			protoLabel = " HTTP "
+		case len(p.Payload) >= 5 && p.Payload[0] == 22:
+			if _, err := l7.ParseTLSClientHello(p.Payload); err == nil {
+				badge = badgeTLS
+				lineColor = ansiBrightMagenta
+				protoLabel = " TLS  "
+			}
+		case p.TCP.HasFlag(layers.TCPFlagSYN):
+			badge = badgeSYN
+			lineColor = ansiYellow
+		case p.TCP.HasFlag(layers.TCPFlagFIN):
+			lineColor = ansiYellow
+		}
+
+		flow := fmt.Sprintf("%s:%d -> %s:%d", p.SrcIP(), p.TCP.SrcPort, p.DstIP(), p.TCP.DstPort)
+		flags := fmt.Sprintf("[%s]", p.TCP.FlagsString())
+		meta := fmt.Sprintf("seq=%d ack=%d len=%d", p.TCP.Seq, p.TCP.Ack, len(p.Payload))
+
+		fmt.Printf("%s %s %s %s %s %s\n",
+			num,
+			ts,
+			colorize(badge, protoLabel),
+			colorize(lineColor+ansiBold, flow),
+			colorize(lineColor, flags),
+			colorize(ansiDim, meta),
+		)
+
 	case p.HasUDP:
-		fmt.Printf("#%-4d %s UDP  %s:%d -> %s:%d len=%d\n",
-			idx, ts, p.SrcIP(), p.UDP.SrcPort, p.DstIP(), p.UDP.DstPort, len(p.Payload))
+		badge := badgeUDP
+		lineColor := ansiBrightCyan
+		protoLabel := " UDP  "
+		if p.UDP.SrcPort == 53 || p.UDP.DstPort == 53 || p.UDP.SrcPort == 5353 || p.UDP.DstPort == 5353 {
+			badge = badgeDNS
+			protoLabel = " DNS  "
+		}
+		flow := fmt.Sprintf("%s:%d -> %s:%d", p.SrcIP(), p.UDP.SrcPort, p.DstIP(), p.UDP.DstPort)
+		meta := fmt.Sprintf("len=%d", len(p.Payload))
+
+		fmt.Printf("%s %s %s %s %s\n",
+			num,
+			ts,
+			colorize(badge, protoLabel),
+			colorize(lineColor+ansiBold, flow),
+			colorize(ansiDim, meta),
+		)
+
 	case p.HasICMP:
-		proto := "ICMP"
+		proto := " ICMP "
 		if p.HasIPv6 {
 			proto = "ICMPv6"
 		}
-		fmt.Printf("#%-4d %s %-6s %s -> %s type=%d code=%d id=%d seq=%d\n",
-			idx, ts, proto, p.SrcIP(), p.DstIP(), p.ICMP.Type, p.ICMP.Code, p.ICMP.ID, p.ICMP.Seq)
+		flow := fmt.Sprintf("%s -> %s", p.SrcIP(), p.DstIP())
+		meta := fmt.Sprintf("type=%d code=%d id=%d seq=%d", p.ICMP.Type, p.ICMP.Code, p.ICMP.ID, p.ICMP.Seq)
+
+		fmt.Printf("%s %s %s %s %s\n",
+			num,
+			ts,
+			colorize(badgeICMP, proto),
+			colorize(ansiYellow+ansiBold, flow),
+			colorize(ansiDim, meta),
+		)
+
 	default:
-		fmt.Printf("#%-4d %s L2=%s payload=%d bytes\n", idx, ts, p.LinkType, len(p.Payload))
+		protoLabel := fmt.Sprintf(" %-4s ", p.LinkType)
+		if p.HasEthernet && p.Ethernet.EtherType == layers.EtherTypeARP {
+			protoLabel = " ARP  "
+		}
+		fmt.Printf("%s %s %s %s\n",
+			num,
+			ts,
+			colorize(badgeARP, protoLabel),
+			colorize(ansiGray, fmt.Sprintf("payload=%d bytes", len(p.Payload))),
+		)
 	}
 }
 

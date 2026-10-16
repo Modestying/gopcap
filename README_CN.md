@@ -151,6 +151,7 @@ Usage of gopcap:
   -c int           捕获匹配指定数量的数据包后自动停止 (0 表示不限制)
   -s int           SnapLen 每个数据包最大捕获字节数 (默认 65535)
   -promisc         开启网卡混杂模式 (Promiscuous Mode)
+  -no-color        禁用终端彩色高亮输出
   -gen-demo string 生成包含 DNS/HTTP/TLS 的示例 .pcap 文件并退出
 ```
 
@@ -203,6 +204,7 @@ sudo ./bin/gopcap -i en0 -f "tcp and port 443" -w tls_capture.pcap -c 100
 | :--- | :--- | :--- |
 | **L2/L3/L4 协议** | `tcp`, `udp`, `icmp`, `icmp6`, `ip` (`ipv4`), `ip6` (`ipv6`), `arp` | 匹配链路层、网络层或传输层协议 |
 | **L7 应用层协议** | `http`, `tls` (`https`, `ssl`), `dns` | 基于载荷特征识别应用层协议（不局限于固定端口） |
+| **载荷关键字包含** | `tcp contains "keyword"`, `http contains "POST"`, `udp contains "example"` | 匹配载荷中包含指定字符串/子串的数据包（Wireshark 风格） |
 | **IP / 主机地址** | `host 10.0.0.1`, `src host 10.0.0.1`, `dst host 10.0.0.2` | 匹配源和/或目的 IPv4/IPv6 地址 |
 | **端口** | `port 80`, `src port 54321`, `dst port 443` | 匹配源和/或目的 TCP/UDP 端口 |
 

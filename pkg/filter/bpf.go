@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"net/netip"
@@ -229,6 +230,7 @@ type PacketFilter struct {
 // Supported primitives (combinable with "and" / "&&"):
 //   - L2/L3/L4 Protocol: "tcp", "udp", "icmp", "icmp6", "ip", "ip6", "arp"
 //   - L7 Protocol:       "http", "tls", "https", "ssl", "dns"
+//   - Payload Contains:  "tcp contains \"keyword\"", "udp contains \"keyword\"", "http contains \"keyword\"", "contains \"keyword\""
 //   - Host/IP:           "host 1.2.3.4", "src host 10.0.0.1", "dst host 10.0.0.2"
 //   - Port:              "port 80", "src port 443", "dst port 53"
 func Compile(expr string) (*PacketFilter, error) {
@@ -237,12 +239,15 @@ func Compile(expr string) (*PacketFilter, error) {
 		return &PacketFilter{expr: ""}, nil
 	}
 
-	normalized := strings.ReplaceAll(trimmed, "&&", " and ")
-	clauses := splitAndClauses(normalized)
+	tokens, err := tokenizeExpr(trimmed)
+	if err != nil {
+		return nil, err
+	}
+	clauses := splitTokenClauses(tokens)
 	preds := make([]func(*layers.DecodedPacket) bool, 0, len(clauses))
 
 	for _, clause := range clauses {
-		pred, err := parseClause(strings.Fields(clause))
+		pred, err := parseClause(clause)
 		if err != nil {
 			return nil, err
 		}
@@ -255,14 +260,77 @@ func Compile(expr string) (*PacketFilter, error) {
 	}, nil
 }
 
-func splitAndClauses(s string) []string {
-	tokens := strings.Fields(s)
-	var clauses []string
+// tokenizeExpr splits a filter expression into tokens while preserving quoted strings
+// (e.g., `tcp contains "GET /index"` -> ["tcp", "contains", "GET /index"]).
+func tokenizeExpr(s string) ([]string, error) {
+	var tokens []string
+	var cur strings.Builder
+	var quote byte
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if quote != 0 {
+			if ch == '\\' && i+1 < len(s) {
+				i++
+				cur.WriteByte(s[i])
+				continue
+			}
+			if ch == quote {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+				quote = 0
+				continue
+			}
+			cur.WriteByte(ch)
+			continue
+		}
+
+		if ch == '"' || ch == '\'' {
+			if cur.Len() > 0 {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+			}
+			quote = ch
+			continue
+		}
+
+		if ch == '&' && i+1 < len(s) && s[i+1] == '&' {
+			if cur.Len() > 0 {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+			}
+			tokens = append(tokens, "and")
+			i++
+			continue
+		}
+
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			if cur.Len() > 0 {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+			}
+			continue
+		}
+
+		cur.WriteByte(ch)
+	}
+
+	if quote != 0 {
+		return nil, fmt.Errorf("filter: unterminated quoted string in %q", s)
+	}
+	if cur.Len() > 0 {
+		tokens = append(tokens, cur.String())
+	}
+	return tokens, nil
+}
+
+func splitTokenClauses(tokens []string) [][]string {
+	var clauses [][]string
 	var cur []string
 	for _, tok := range tokens {
 		if strings.EqualFold(tok, "and") {
 			if len(cur) > 0 {
-				clauses = append(clauses, strings.Join(cur, " "))
+				clauses = append(clauses, cur)
 				cur = nil
 			}
 			continue
@@ -270,7 +338,7 @@ func splitAndClauses(s string) []string {
 		cur = append(cur, tok)
 	}
 	if len(cur) > 0 {
-		clauses = append(clauses, strings.Join(cur, " "))
+		clauses = append(clauses, cur)
 	}
 	return clauses
 }
@@ -364,12 +432,42 @@ func parseClause(tokens []string) (func(*layers.DecodedPacket) bool, error) {
 			return func(p *layers.DecodedPacket) bool {
 				return p.DstIP() == addr
 			}, nil
+
+		case "contains":
+			needle := []byte(tokens[1])
+			return func(p *layers.DecodedPacket) bool {
+				return len(p.Payload) > 0 && bytes.Contains(p.Payload, needle)
+			}, nil
 		}
 
 	case 3:
 		dir := first
 		kind := strings.ToLower(tokens[1])
 		val := tokens[2]
+
+		if kind == "contains" {
+			needle := []byte(val)
+			switch dir {
+			case "tcp":
+				return func(p *layers.DecodedPacket) bool {
+					return p.HasTCP && bytes.Contains(p.Payload, needle)
+				}, nil
+			case "udp":
+				return func(p *layers.DecodedPacket) bool {
+					return p.HasUDP && bytes.Contains(p.Payload, needle)
+				}, nil
+			case "http":
+				return func(p *layers.DecodedPacket) bool {
+					return p.HasTCP && l7.IsLikelyHTTP(p.Payload) && bytes.Contains(p.Payload, needle)
+				}, nil
+			case "icmp":
+				return func(p *layers.DecodedPacket) bool {
+					return p.HasICMP && bytes.Contains(p.Payload, needle)
+				}, nil
+			default:
+				return nil, fmt.Errorf("filter: unsupported protocol %q for contains", tokens[0])
+			}
+		}
 
 		if (dir == "src" || dir == "dst") && kind == "host" {
 			addr, err := netip.ParseAddr(val)

@@ -77,4 +77,20 @@ func TestCompileAndMatch(t *testing.T) {
 	if !fHttp.Match(httpPkt) {
 		t.Errorf("expected filter 'http' to match HTTP POST packet on non-standard port 8080")
 	}
+
+	fContains, err := Compile(`tcp contains "POST /api/v1" and http contains "api.example.com"`)
+	if err != nil {
+		t.Fatalf("Compile('tcp contains ...') failed: %v", err)
+	}
+	if !fContains.Match(httpPkt) {
+		t.Errorf("expected filter 'tcp contains' to match httpPkt")
+	}
+
+	fContainsMiss, err := Compile(`tcp contains "not-present-keyword"`)
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	if fContainsMiss.Match(httpPkt) {
+		t.Errorf("expected filter 'tcp contains' not to match missing keyword")
+	}
 }

@@ -21,6 +21,7 @@ type HTTPMessage struct {
 	ContentType   string
 	ContentLength int
 	Headers       map[string]string
+	Body          []byte
 	BodyPreview   []byte
 }
 
@@ -66,6 +67,19 @@ func (m *HTTPMessage) Summary() string {
 		host = "-"
 	}
 	return fmt.Sprintf("HTTP %s %s (Host: %s)", m.Method, m.URI, host)
+}
+
+// BodyString returns a printable representation of the HTTP body.
+func (m *HTTPMessage) BodyString() string {
+	if len(m.Body) == 0 {
+		return ""
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\r' || r == '\n' || r == '\t' || (r >= 32 && r != 127) {
+			return r
+		}
+		return '.'
+	}, string(m.Body))
 }
 
 // ParseHTTP parses an HTTP/1.x request or response from a TCP payload or reassembled stream buffer.
@@ -148,11 +162,16 @@ func ParseHTTP(data []byte) (*HTTPMessage, error) {
 	}
 
 	if len(body) > 0 {
-		previewLen := len(body)
+		if msg.ContentLength > 0 && len(body) > msg.ContentLength {
+			msg.Body = body[:msg.ContentLength]
+		} else {
+			msg.Body = body
+		}
+		previewLen := len(msg.Body)
 		if previewLen > 256 {
 			previewLen = 256
 		}
-		msg.BodyPreview = body[:previewLen]
+		msg.BodyPreview = msg.Body[:previewLen]
 	}
 
 	return msg, nil

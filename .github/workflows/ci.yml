@@ -75,9 +75,16 @@ jobs:
           GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o dist/gopcap-darwin-arm64  ./cmd/gopcap
           cd dist && sha256sum gopcap-* > checksums.txt
 
+      - name: Extract Release Notes from Git Tag
+        run: |
+          git fetch --force --tags
+          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           files: |
             dist/gopcap-linux-amd64

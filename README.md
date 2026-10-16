@@ -150,6 +150,7 @@ Usage of gopcap:
   -c int           Stop after capturing N matching packets (0 = unlimited)
   -s int           SnapLen: maximum bytes per packet (default 65535)
   -promisc         Enable promiscuous mode on live interface
+  -no-color        Disable colored terminal output
   -gen-demo string Generate a sample multi-protocol .pcap file and exit
 ```
 
@@ -202,6 +203,7 @@ Clauses can be combined with `and` or `&&`:
 | :--- | :--- | :--- |
 | **L2/L3/L4 Protocol** | `tcp`, `udp`, `icmp`, `icmp6`, `ip` (`ipv4`), `ip6` (`ipv6`), `arp` | Match by link, network, or transport layer protocol |
 | **L7 Protocol** | `http`, `tls` (`https`, `ssl`), `dns` | Payload-aware application protocol matching (port-independent for HTTP/TLS) |
+| **Payload Contains** | `tcp contains "keyword"`, `http contains "POST"`, `udp contains "example"` | Match packets whose payload contains the given string/substring |
 | **IP / Host** | `host 10.0.0.1`, `src host 10.0.0.1`, `dst host 10.0.0.2` | Match source and/or destination IPv4/IPv6 address |
 | **Port** | `port 80`, `src port 54321`, `dst port 443` | Match source and/or destination TCP/UDP port |
 
